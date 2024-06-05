@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/PuerkitoBio/goquery"
 	"io"
 	"io/ioutil"
 	"log"
@@ -55,7 +56,17 @@ func main() {
 
 	var manifestURL string
 	if len(os.Args) >= 2 {
-		manifestURL = os.Args[1]
+		inputURL := os.Args[1]
+		if !strings.Contains(inputURL, "manifest/video.m3u8") {
+			// Attempt to extract .m3u8 link from website
+			extractedURL, err := extractM3U8LinkFromWebsite(inputURL)
+			if err != nil {
+				log.Fatalf("Failed to extract .m3u8 link: %v", err)
+			}
+			manifestURL = extractedURL
+		} else {
+			manifestURL = inputURL
+		}
 	}
 
 	var prompt promptui.Select
@@ -110,6 +121,46 @@ func main() {
 			fmt.Println("Option not available")
 		}
 	}
+}
+
+// initUpload handles the upload process for local video files (placeholder function)
+func initUpload(filename string) {
+	fmt.Printf("Uploading video from: %s\n", filename)
+	// Implement the actual upload functionality as needed
+}
+
+// extractM3U8LinkFromWebsite fetches and parses the website's HTML content to extract the .m3u8 link
+func extractM3U8LinkFromWebsite(url string) (string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch the website: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("failed to fetch the website: status code %d", resp.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse website content: %v", err)
+	}
+
+	var thumbnailURL string
+	doc.Find("video").Each(func(i int, s *goquery.Selection) {
+		poster, exists := s.Attr("poster")
+		if exists {
+			thumbnailURL = poster
+			return
+		}
+	})
+
+	if thumbnailURL == "" {
+		return "", errors.New("no matching thumbnail URL found")
+	}
+
+	m3u8URL := strings.Replace(thumbnailURL, "thumbnails/thumbnail.jpg", "manifest/video.m3u8", 1)
+	return m3u8URL, nil
 }
 
 // outputManifestURL will output the m3u8 manifest URL for a specific video resolution
@@ -225,6 +276,7 @@ func initializeVideoDownloadProcess(manifestURL string) {
 	}
 
 	storedPaths := []string{}
+	segmentPathsToDelete := []string{}
 	for _, media := range video.MasterPlaylist.Variants[0].Alternatives {
 		if media.Type == "AUDIO" {
 			manifestForResolution := fmt.Sprintf("%s/%s/manifest/%s", video.BaseURL, video.VideoUID, media.URI)
@@ -233,11 +285,12 @@ func initializeVideoDownloadProcess(manifestURL string) {
 				log.Fatalf("there was a problem downloading the segments: %v", err)
 			}
 
-			storedPath, err := video.concatenateTSFiles(segmentPaths, chosenResolution, true)
+			storedPath, segmentPaths, err := video.concatenateTSFiles(segmentPaths, chosenResolution, true)
 			if err != nil {
 				log.Fatalf("there was a problem concatenating the segments: %v", err)
 			}
 			storedPaths = append(storedPaths, storedPath)
+			segmentPathsToDelete = append(segmentPathsToDelete, segmentPaths...)
 		}
 	}
 
@@ -246,17 +299,27 @@ func initializeVideoDownloadProcess(manifestURL string) {
 		log.Fatalf("there was a problem downloading the segments: %v", err)
 	}
 
-	storedPath, err := video.concatenateTSFiles(segmentPaths, chosenResolution, false)
+	storedPath, segmentPaths, err := video.concatenateTSFiles(segmentPaths, chosenResolution, false)
 	if err != nil {
 		log.Fatalf("there was a problem concatenating the segments: %v", err)
 	}
 	storedPaths = append(storedPaths, storedPath)
+	segmentPathsToDelete = append(segmentPathsToDelete, segmentPaths...)
 
 	// merge potential audio and video files together with ffmpeg
 	if len(storedPaths) >= 2 {
 		fmt.Printf("🌱 audio and video are being merged...")
 		video.mergeMP4FilesInDir(storedPaths)
 	}
+
+	// Delete the segment files
+	for _, segmentPath := range segmentPathsToDelete {
+		err = os.Remove(segmentPath)
+		if err != nil {
+			log.Printf("Error deleting segment file %s: %v", segmentPath, err)
+		}
+	}
+
 	video.renderOutputPaths(chosenResolution)
 }
 
@@ -405,11 +468,14 @@ func (v *Video) retrieveMasterPlaylist(url string) (*m3u8.MasterPlaylist, error)
 		return nil, err
 	}
 
-	masterPlaylist := playlist.(*m3u8.MasterPlaylist)
+	masterPlaylist, ok := playlist.(*m3u8.MasterPlaylist)
+	if !ok {
+		return nil, errors.New("failed to cast to MasterPlaylist")
+	}
 	return masterPlaylist, nil
 }
 
-// downloadFile will take a URL and download it to a predfined location
+// downloadFile will take a URL and download it to a predefined location
 func downloadFile(url, relativePath string) error {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -450,7 +516,7 @@ func getSegmentName(urlStr string) (string, error) {
 
 // concatenateTSFiles take all downloaded segments and concat into single, playable
 // mp4 using ffmpeg
-func (v *Video) concatenateTSFiles(filePaths []string, chosenResolution string, isAudio bool) (string, error) {
+func (v *Video) concatenateTSFiles(filePaths []string, chosenResolution string, isAudio bool) (string, []string, error) {
 	var outputFilename string
 	outputDir := fmt.Sprintf("%s/%s", v.VideoUID, chosenResolution)
 	outputFilename = fmt.Sprintf("%s_video.mp4", v.VideoUID)
@@ -461,7 +527,7 @@ func (v *Video) concatenateTSFiles(filePaths []string, chosenResolution string, 
 
 	currentDirectory, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	for idx, file := range filePaths {
@@ -482,18 +548,14 @@ func (v *Video) concatenateTSFiles(filePaths []string, chosenResolution string, 
 			log.Fatal(err)
 		}
 
-		cmd := exec.Command("cat")
-		cmd.Stdin = inputFile
-		cmd.Stdout = outputFile
-
-		err = cmd.Run()
+		_, err = io.Copy(outputFile, inputFile)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		inputFile.Close()
 	}
-	return outputPath, nil
+	return outputPath, filePaths, nil
 }
 
 // printResolutionDownloadMenu lists available options to pull segments
@@ -523,7 +585,7 @@ func (v *Video) printResolutionDownloadMenu() (string, string, error) {
 		return "", "", err
 	}
 
-	userOption, err = strconv.Atoi(input[:len(input)-1])
+	userOption, err = strconv.Atoi(strings.TrimSpace(input[:len(input)-1]))
 	if err != nil {
 		fmt.Println("Error converting input to integer:", err)
 		return "", "", err
