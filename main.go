@@ -348,7 +348,7 @@ func (v *Video) downloadSegmentsFromManifest(manifestURL, resolution string, ski
 	dataBuf := bytes.NewBuffer(body)
 	playlist, listType, err := m3u8.Decode(*dataBuf, false)
 	if err != nil {
-		return nil, err
+		return nil, err)
 	}
 
 	concurrencyLimit := 5
@@ -622,19 +622,21 @@ func (v *Video) mergeMP4FilesInDir(filePaths []string) error {
 	defer file.Close()
 
 	dirPath := filepath.Dir(file.Name())
-	cmd := exec.Command("ffmpeg", "-i", filePaths[0], "-i", filePaths[1], "-c:v", "copy", "-c:a", "copy", fmt.Sprintf("%s/%s.mp4", dirPath, v.VideoUID))
+	mergedFilePath := fmt.Sprintf("%s/%s.mp4", dirPath, v.VideoUID)
+
+	cmd := exec.Command("ffmpeg", "-i", filePaths[0], "-i", filePaths[1], "-c:v", "copy", "-c:a", "copy", mergedFilePath)
 	err = cmd.Run()
 	if err != nil {
 		return err
 	}
 
-	err = os.RemoveAll(filePaths[0])
-	if err != nil {
-		return err
+	// Delete the temporary _audio.mp4 and _video.mp4 files
+	for _, filePath := range filePaths {
+		err = os.Remove(filePath)
+		if err != nil {
+			log.Printf("Error deleting file %s: %v", filePath, err)
+		}
 	}
-	err = os.RemoveAll(filePaths[1])
-	if err != nil {
-		return err
-	}
+
 	return nil
 }
