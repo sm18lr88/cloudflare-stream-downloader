@@ -1,4 +1,4 @@
-module github.com/Schachte/cloudflare-stream-downloader
+module github.com/sm18lr88/cloudflare-stream-downloader
 
 go 1.22
 
