@@ -123,12 +123,6 @@ func main() {
 	}
 }
 
-// initUpload handles the upload process for local video files (placeholder function)
-func initUpload(filename string) {
-	fmt.Printf("Uploading video from: %s\n", filename)
-	// Implement the actual upload functionality as needed
-}
-
 // extractM3U8LinkFromWebsite fetches and parses the website's HTML content to extract the .m3u8 link
 func extractM3U8LinkFromWebsite(url string) (string, error) {
 	resp, err := http.Get(url)
